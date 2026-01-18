@@ -30,8 +30,94 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <dirent.h>
 
 #include "tmux.h"
+
+/*
+ * Security: Validate a directory path safely using openat() to prevent
+ * TOCTOU race conditions and symlink attacks.
+ */
+static int
+secure_validate_dir(const char *path, uid_t uid, char **cause)
+{
+	int		fd;
+	struct stat	sb;
+
+	/* Open directory with O_NOFOLLOW to prevent symlink attacks */
+	fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+	if (fd == -1) {
+		if (cause != NULL)
+			xasprintf(cause, "cannot open directory %s: %s",
+			    path, strerror(errno));
+		return (-1);
+	}
+
+	/* Verify ownership and permissions using the file descriptor */
+	if (fstat(fd, &sb) != 0) {
+		if (cause != NULL)
+			xasprintf(cause, "cannot stat directory %s: %s",
+			    path, strerror(errno));
+		close(fd);
+		return (-1);
+	}
+
+	/* Must be a directory */
+	if (!S_ISDIR(sb.st_mode)) {
+		if (cause != NULL)
+			xasprintf(cause, "%s is not a directory", path);
+		close(fd);
+		return (-1);
+	}
+
+	/* Must be owned by the current user */
+	if (sb.st_uid != uid) {
+		if (cause != NULL)
+			xasprintf(cause, "directory %s not owned by user (owner: %ld)",
+			    path, (long)sb.st_uid);
+		close(fd);
+		return (-1);
+	}
+
+	/* Reject any group or other permissions */
+	if ((sb.st_mode & TMUX_SOCK_PERM) != 0) {
+		if (cause != NULL)
+			xasprintf(cause, "directory %s has unsafe permissions %04o",
+			    path, sb.st_mode & 0777);
+		close(fd);
+		return (-1);
+	}
+
+	close(fd);
+	return (0);
+}
+
+/*
+ * Security: Create directory securely with proper permissions.
+ */
+static int
+secure_mkdir(const char *path, uid_t uid, char **cause)
+{
+	mode_t	old_umask;
+
+	/* Set strict umask before creating directory */
+	old_umask = umask(077);
+	
+	if (mkdir(path, TMUX_SOCK_DIR_MODE) != 0) {
+		umask(old_umask);
+		if (errno == EEXIST) {
+			/* Directory exists, validate it */
+			return secure_validate_dir(path, uid, cause);
+		}
+		if (cause != NULL)
+			xasprintf(cause, "cannot create directory %s: %s",
+			    path, strerror(errno));
+		return (-1);
+	}
+
+	umask(old_umask);
+	return secure_validate_dir(path, uid, cause);
+}
 
 struct options	*global_options;	/* server options */
 struct options	*global_s_options;	/* session options */
@@ -125,6 +211,16 @@ expand_path(const char *path, const char *home)
 			name = xstrdup(path + 1);
 		else
 			name = xstrndup(path + 1, end - path - 1);
+
+		/* Handle special $UID variable for secure socket paths */
+		if (strcmp(name, "UID") == 0) {
+			free(name);
+			if (end == NULL)
+				end = "";
+			xasprintf(&expanded, "%ld%s", (long)getuid(), end);
+			return (expanded);
+		}
+
 		value = environ_find(global_environ, name);
 		free(name);
 		if (value == NULL)
@@ -183,56 +279,71 @@ expand_paths(const char *s, char ***paths, u_int *n, int no_realpath)
 	free(copy);
 }
 
+/*
+ * Security: Try to find a usable socket directory from the available paths.
+ * Prefers secure locations like XDG_RUNTIME_DIR over /tmp.
+ */
 static char *
-make_label(const char *label, char **cause)
+find_secure_socket_dir(char **cause)
 {
-	char		**paths, *path, *base;
+	char		**paths, *base;
 	u_int		  i, n;
-	struct stat	  sb;
 	uid_t		  uid;
+	char		 *valid_cause = NULL;
 
-	*cause = NULL;
-	if (label == NULL)
-		label = "default";
 	uid = getuid();
-
 	expand_paths(TMUX_SOCK, &paths, &n, 0);
+
 	if (n == 0) {
 		xasprintf(cause, "no suitable socket path");
 		return (NULL);
 	}
-	path = paths[0]; /* can only have one socket! */
-	for (i = 1; i < n; i++)
-		free(paths[i]);
-	free(paths);
 
-	xasprintf(&base, "%s/tmux-%ld", path, (long)uid);
-	free(path);
-	if (mkdir(base, S_IRWXU) != 0 && errno != EEXIST) {
-		xasprintf(cause, "couldn't create directory %s (%s)", base,
-		    strerror(errno));
-		goto fail;
+	/* Try each path in order of preference (XDG_RUNTIME_DIR first) */
+	for (i = 0; i < n; i++) {
+		xasprintf(&base, "%s/tmux-%ld", paths[i], (long)uid);
+		
+		/* Try to create/validate directory securely */
+		if (secure_mkdir(base, uid, &valid_cause) == 0) {
+			/* Success! Clean up and return */
+			while (i < n)
+				free(paths[i++]);
+			free(paths);
+			log_debug("using secure socket directory: %s", base);
+			return (base);
+		}
+
+		/* Log why this path failed and try next */
+		log_debug("socket path %s failed: %s", base, 
+		    valid_cause ? valid_cause : "unknown");
+		free(valid_cause);
+		valid_cause = NULL;
+		free(base);
+		free(paths[i]);
 	}
-	if (lstat(base, &sb) != 0) {
-		xasprintf(cause, "couldn't read directory %s (%s)", base,
-		    strerror(errno));
-		goto fail;
-	}
-	if (!S_ISDIR(sb.st_mode)) {
-		xasprintf(cause, "%s is not a directory", base);
-		goto fail;
-	}
-	if (sb.st_uid != uid || (sb.st_mode & TMUX_SOCK_PERM) != 0) {
-		xasprintf(cause, "directory %s has unsafe permissions", base);
-		goto fail;
-	}
+
+	free(paths);
+	xasprintf(cause, "no secure socket directory available");
+	return (NULL);
+}
+
+static char *
+make_label(const char *label, char **cause)
+{
+	char		*path, *base;
+
+	*cause = NULL;
+	if (label == NULL)
+		label = "default";
+
+	/* Find a secure socket directory */
+	base = find_secure_socket_dir(cause);
+	if (base == NULL)
+		return (NULL);
+
 	xasprintf(&path, "%s/%s", base, label);
 	free(base);
 	return (path);
-
-fail:
-	free(base);
-	return (NULL);
 }
 
 char *

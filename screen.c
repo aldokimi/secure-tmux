@@ -18,11 +18,82 @@
 
 #include <sys/types.h>
 
+#include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
 #include "tmux.h"
+
+/*
+ * Security: Sanitize a title string by removing dangerous escape sequences
+ * and control characters. Returns a newly allocated sanitized string.
+ * Caller must free the returned string.
+ */
+static char *
+title_sanitize(const char *title, int strict)
+{
+	char		*out;
+	const char	*p;
+	size_t		 len, i;
+	int		 in_escape = 0;
+
+	if (title == NULL || *title == '\0')
+		return (xstrdup(""));
+
+	len = strlen(title);
+	out = xmalloc(len + 1);
+	i = 0;
+
+	for (p = title; *p != '\0'; p++) {
+		unsigned char c = (unsigned char)*p;
+
+		/* Track escape sequences */
+		if (c == 0x1B) {  /* ESC */
+			in_escape = 1;
+			log_debug("title: filtering escape at position %ld",
+			    (long)(p - title));
+			continue;
+		}
+
+		/* Skip characters within escape sequences */
+		if (in_escape) {
+			/* CSI sequences end with 0x40-0x7E */
+			if (c >= 0x40 && c <= 0x7E)
+				in_escape = 0;
+			/* OSC sequences end with BEL or ST */
+			else if (c == 0x07)
+				in_escape = 0;
+			continue;
+		}
+
+		/* In strict mode, only allow printable ASCII and safe UTF-8 */
+		if (strict) {
+			/* Block all C0 control characters except space */
+			if (c < 0x20 || c == 0x7F)
+				continue;
+		} else {
+			/* In normal mode, block dangerous C0 controls */
+			switch (c) {
+			case 0x00:  /* NUL */
+			case 0x07:  /* BEL */
+			case 0x08:  /* BS */
+			case 0x0E:  /* SO */
+			case 0x0F:  /* SI */
+			case 0x1A:  /* SUB */
+			case 0x7F:  /* DEL */
+				continue;
+			default:
+				break;
+			}
+		}
+
+		out[i++] = c;
+	}
+
+	out[i] = '\0';
+	return (out);
+}
 
 /* Selected area in screen. */
 struct screen_sel {
@@ -244,8 +315,23 @@ screen_set_cursor_colour(struct screen *s, int colour)
 int
 screen_set_title(struct screen *s, const char *title)
 {
+	char	*sanitized;
+	int	 mode;
+
 	if (!utf8_isvalid(title))
 		return (0);
+
+	/* Security: Sanitize title based on title-sanitize option */
+	mode = options_get_number(global_options, "title-sanitize");
+	if (mode > 0) {
+		sanitized = title_sanitize(title, mode == 2);
+		if (sanitized != NULL) {
+			free(s->title);
+			s->title = sanitized;
+			return (1);
+		}
+	}
+
 	free(s->title);
 	s->title = xstrdup(title);
 	return (1);

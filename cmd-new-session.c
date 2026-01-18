@@ -39,9 +39,9 @@ const struct cmd_entry cmd_new_session_entry = {
 	.name = "new-session",
 	.alias = "new",
 
-	.args = { "Ac:dDe:EF:f:n:Ps:t:x:Xy:", 0, -1, NULL },
+	.args = { "Ac:dDe:EF:f:n:p:Ps:t:x:Xy:", 0, -1, NULL },
 	.usage = "[-AdDEPX] [-c start-directory] [-e environment] [-F format] "
-		 "[-f flags] [-n window-name] [-s session-name] "
+		 "[-f flags] [-n window-name] [-p passcode] [-s session-name] "
 		 CMD_TARGET_SESSION_USAGE " [-x width] [-y height] "
 		 "[shell-command [argument ...]]",
 
@@ -76,7 +76,7 @@ cmd_new_session_exec(struct cmd *self, struct cmdq_item *item)
 	struct options		*oo;
 	struct termios		 tio, *tiop;
 	struct session_group	*sg = NULL;
-	const char		*errstr, *template, *group, *tmp;
+	const char		*errstr, *template, *group, *tmp, *passcode;
 	char			*cause, *cwd = NULL, *cp, *newname = NULL;
 	char			*name, *prefix = NULL;
 	int			 detached, already_attached, is_control = 0;
@@ -118,7 +118,7 @@ cmd_new_session_exec(struct cmd *self, struct cmdq_item *item)
 		if (as != NULL) {
 			retval = cmd_attach_session(item, as->name,
 			    args_has(args, 'D'), args_has(args, 'X'), 0, NULL,
-			    args_has(args, 'E'), args_get(args, 'f'));
+			    args_has(args, 'E'), args_get(args, 'f'), NULL);
 			free(newname);
 			return (retval);
 		}
@@ -276,6 +276,25 @@ cmd_new_session_exec(struct cmd *self, struct cmdq_item *item)
 		av = args_next_value(av);
 	}
 	s = session_create(prefix, newname, cwd, env, oo, tiop);
+
+	/* Set session passcode if provided. */
+	passcode = args_get(args, 'p');
+	if (passcode != NULL && *passcode != '\0') {
+		if (strlen(passcode) < 4) {
+			cmdq_error(item, "passcode must be at least 4 characters");
+			session_destroy(s, 1, __func__);
+			goto fail;
+		}
+		if (strlen(passcode) > 64) {
+			cmdq_error(item, "passcode must be at most 64 characters");
+			session_destroy(s, 1, __func__);
+			goto fail;
+		}
+		if (s->acl == NULL)
+			s->acl = session_acl_create(getuid());
+		session_acl_set_passcode(s->acl, passcode);
+		log_debug("session %s: passcode set on creation", s->name);
+	}
 
 	/* Spawn the initial window. */
 	sc.item = item;

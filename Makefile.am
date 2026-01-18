@@ -128,6 +128,7 @@ dist_tmux_SOURCES = \
 	cmd-select-window.c \
 	cmd-send-keys.c \
 	cmd-server-access.c \
+	cmd-session-passcode.c \
 	cmd-set-buffer.c \
 	cmd-set-environment.c \
 	cmd-set-option.c \
@@ -182,6 +183,7 @@ dist_tmux_SOURCES = \
 	server-client.c \
 	server-fn.c \
 	server.c \
+	session-acl.c \
 	session.c \
 	spawn.c \
 	status.c \

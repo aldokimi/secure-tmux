@@ -102,6 +102,49 @@ server_check_marked(void)
 	return (cmd_find_valid_state(&marked_pane));
 }
 
+/*
+ * Security: Verify the socket's parent directory is safe before creating.
+ */
+static int
+server_verify_socket_dir(const char *path, char **cause)
+{
+	char		*dir, *slash;
+	struct stat	 sb;
+	uid_t		 uid = getuid();
+
+	dir = xstrdup(path);
+	slash = strrchr(dir, '/');
+	if (slash != NULL)
+		*slash = '\0';
+
+	if (lstat(dir, &sb) != 0) {
+		if (cause != NULL)
+			xasprintf(cause, "cannot stat socket directory %s: %s",
+			    dir, strerror(errno));
+		free(dir);
+		return (-1);
+	}
+
+	/* Must be owned by current user */
+	if (sb.st_uid != uid) {
+		if (cause != NULL)
+			xasprintf(cause, "socket directory %s not owned by user", dir);
+		free(dir);
+		return (-1);
+	}
+
+	/* Must not have group or other write access */
+	if ((sb.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
+		if (cause != NULL)
+			xasprintf(cause, "socket directory %s has unsafe permissions", dir);
+		free(dir);
+		return (-1);
+	}
+
+	free(dir);
+	return (0);
+}
+
 /* Create server socket. */
 int
 server_create_socket(uint64_t flags, char **cause)
@@ -110,6 +153,11 @@ server_create_socket(uint64_t flags, char **cause)
 	size_t			size;
 	mode_t			mask;
 	int			fd, saved_errno;
+	struct stat		sb;
+
+	/* Security: verify socket directory before creating socket */
+	if (server_verify_socket_dir(socket_path, cause) != 0)
+		return (-1);
 
 	memset(&sa, 0, sizeof sa);
 	sa.sun_family = AF_UNIX;
@@ -118,22 +166,47 @@ server_create_socket(uint64_t flags, char **cause)
 		errno = ENAMETOOLONG;
 		goto fail;
 	}
+
+	/* Security: check if socket already exists and verify ownership */
+	if (lstat(sa.sun_path, &sb) == 0) {
+		if (!S_ISSOCK(sb.st_mode)) {
+			if (cause != NULL)
+				xasprintf(cause, "%s exists but is not a socket",
+				    socket_path);
+			return (-1);
+		}
+		if (sb.st_uid != getuid()) {
+			if (cause != NULL)
+				xasprintf(cause, "socket %s not owned by user",
+				    socket_path);
+			return (-1);
+		}
+	}
 	unlink(sa.sun_path);
 
 	if ((fd = socket(AF_UNIX, SOCK_STREAM, 0)) == -1)
 		goto fail;
 
-	if (flags & CLIENT_DEFAULTSOCKET)
-		mask = umask(S_IXUSR|S_IXGRP|S_IRWXO);
-	else
-		mask = umask(S_IXUSR|S_IRWXG|S_IRWXO);
+	/*
+	 * Security: Use strict permissions for socket file.
+	 * Owner read/write only - no group or other access.
+	 */
+	mask = umask(S_IXUSR | S_IRWXG | S_IRWXO);
 	if (bind(fd, (struct sockaddr *)&sa, sizeof sa) == -1) {
 		saved_errno = errno;
 		close(fd);
+		umask(mask);
 		errno = saved_errno;
 		goto fail;
 	}
 	umask(mask);
+
+	/* Security: verify socket was created with correct permissions */
+	if (fstat(fd, &sb) == 0) {
+		if ((sb.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
+			log_debug("warning: socket created with loose permissions");
+		}
+	}
 
 	if (listen(fd, 128) == -1) {
 		saved_errno = errno;

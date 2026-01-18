@@ -291,6 +291,23 @@ const struct options_table_entry options_table[] = {
 		  "When this is reached, the oldest buffer is deleted."
 	},
 
+	/* Security: Socket security options */
+	{ .name = "socket-path-validate",
+	  .type = OPTIONS_TABLE_FLAG,
+	  .scope = OPTIONS_TABLE_SERVER,
+	  .default_num = 1,
+	  .text = "Whether to strictly validate the socket directory path, "
+	          "checking ownership and permissions to prevent symlink attacks."
+	},
+
+	{ .name = "socket-strict-permissions",
+	  .type = OPTIONS_TABLE_FLAG,
+	  .scope = OPTIONS_TABLE_SERVER,
+	  .default_num = 1,
+	  .text = "Whether to enforce strict socket permissions (mode 0700) "
+	          "rejecting any group or world access to socket directories."
+	},
+
 	{ .name = "command-alias",
 	  .type = OPTIONS_TABLE_STRING,
 	  .scope = OPTIONS_TABLE_SERVER,
@@ -418,6 +435,27 @@ const struct options_table_entry options_table[] = {
 	          "('buffer'); request the clipboard from the most recently "
 	          "used terminal ('request'); or to request the clipboard, "
 	          "create a buffer, and send it to the application ('both')."
+	},
+
+	/* Security: Clipboard protection options */
+	{ .name = "clipboard-sanitize",
+	  .type = OPTIONS_TABLE_FLAG,
+	  .scope = OPTIONS_TABLE_SERVER,
+	  .default_num = 1,
+	  .text = "Whether to sanitize clipboard data by removing dangerous "
+	          "escape sequences and control characters that could be used "
+	          "for clipboard poisoning attacks."
+	},
+
+	{ .name = "clipboard-max-size",
+	  .type = OPTIONS_TABLE_NUMBER,
+	  .scope = OPTIONS_TABLE_SERVER,
+	  .minimum = 1024,
+	  .maximum = 16 * 1024 * 1024,
+	  .default_num = 1024 * 1024,
+	  .unit = "bytes",
+	  .text = "Maximum size of clipboard data that can be set via OSC 52. "
+	          "Larger data will be rejected to prevent memory exhaustion."
 	},
 
 	{ .name = "history-file",
@@ -550,6 +588,25 @@ const struct options_table_entry options_table[] = {
 	  .default_num = 1,
 	  .text = "If the Unicode VS16 codepoint should always be treated as a "
 		  "wide character."
+	},
+
+	/* Security: Title and escape sequence protection options */
+	{ .name = "title-sanitize",
+	  .type = OPTIONS_TABLE_NUMBER,
+	  .scope = OPTIONS_TABLE_SERVER,
+	  .minimum = 0,
+	  .maximum = 2,
+	  .default_num = 1,
+	  .text = "How to sanitize pane and window titles. 0=off (no sanitization), "
+	          "1=on (remove escape sequences), 2=strict (only allow printable ASCII)."
+	},
+
+	{ .name = "control-output-sanitize",
+	  .type = OPTIONS_TABLE_FLAG,
+	  .scope = OPTIONS_TABLE_SERVER,
+	  .default_num = 1,
+	  .text = "Whether to sanitize output sent to control mode clients by "
+	          "removing escape sequences that could be used for injection attacks."
 	},
 
 	/* Session options. */
@@ -1013,6 +1070,26 @@ const struct options_table_entry options_table[] = {
 			 "SSH_AGENT_PID SSH_CONNECTION WINDOWID XAUTHORITY",
 	  .text = "List of environment variables to update in the session "
 		  "environment when a client is attached."
+	},
+
+	/* Security: Environment variable protection options */
+	{ .name = "update-environment-deny",
+	  .type = OPTIONS_TABLE_STRING,
+	  .scope = OPTIONS_TABLE_SESSION,
+	  .flags = OPTIONS_TABLE_IS_ARRAY,
+	  .default_str = "LD_PRELOAD LD_LIBRARY_PATH DYLD_INSERT_LIBRARIES",
+	  .text = "List of environment variables that should never be updated "
+	          "from client connections. Dangerous variables like LD_PRELOAD "
+	          "are blocked by default."
+	},
+
+	{ .name = "secure-update-environment",
+	  .type = OPTIONS_TABLE_FLAG,
+	  .scope = OPTIONS_TABLE_SERVER,
+	  .default_num = 1,
+	  .text = "Whether to validate credential variables (SSH_AUTH_SOCK, "
+	          "KRB5CCNAME) before updating. Invalid or stale credentials "
+	          "will be cleared instead of updated."
 	},
 
 	{ .name = "visual-activity",

@@ -19,12 +19,65 @@
 
 #include <sys/types.h>
 
+#include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
 
 #include "tmux.h"
+
+/*
+ * Security: Sanitize control output by removing escape sequences that could
+ * be used to inject commands into the terminal of a control client.
+ * Returns a newly allocated sanitized string. Caller must free.
+ */
+static char *
+control_sanitize_output(const char *s)
+{
+	char		*out;
+	const char	*p;
+	size_t		 len, i;
+	int		 in_escape = 0;
+
+	if (s == NULL || *s == '\0')
+		return (xstrdup(""));
+
+	len = strlen(s);
+	out = xmalloc(len + 1);
+	i = 0;
+
+	for (p = s; *p != '\0'; p++) {
+		unsigned char c = (unsigned char)*p;
+
+		/* Track and skip escape sequences */
+		if (c == 0x1B) {  /* ESC */
+			in_escape = 1;
+			continue;
+		}
+
+		if (in_escape) {
+			/* CSI sequences end with 0x40-0x7E */
+			if (c >= 0x40 && c <= 0x7E)
+				in_escape = 0;
+			/* OSC sequences end with BEL */
+			else if (c == 0x07)
+				in_escape = 0;
+			continue;
+		}
+
+		/* Block C0 control characters except tab and newline */
+		if (c < 0x20 && c != '\t' && c != '\n')
+			continue;
+		if (c == 0x7F)  /* DEL */
+			continue;
+
+		out[i++] = c;
+	}
+
+	out[i] = '\0';
+	return (out);
+}
 
 /*
  * Block of data to output. Each client has one "all" queue of blocks and
@@ -389,10 +442,19 @@ static void printflike(2, 0)
 control_vwrite(struct client *c, const char *fmt, va_list ap)
 {
 	struct control_state	*cs = c->control_state;
-	char			*s;
+	char			*s, *sanitized;
+	int			 do_sanitize;
 
 	xvasprintf(&s, fmt, ap);
 	log_debug("%s: %s: writing line: %s", __func__, c->name, s);
+
+	/* Security: Sanitize control output if enabled */
+	do_sanitize = options_get_number(global_options, "control-output-sanitize");
+	if (do_sanitize) {
+		sanitized = control_sanitize_output(s);
+		free(s);
+		s = sanitized;
+	}
 
 	bufferevent_write(cs->write_event, s, strlen(s));
 	bufferevent_write(cs->write_event, "\n", 1);
