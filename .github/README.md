@@ -1,95 +1,263 @@
-# Welcome to tmux!
+<div align="center">
 
-tmux is a terminal multiplexer: it enables a number of terminals to be created,
-accessed, and controlled from a single screen. tmux may be detached from a
-screen and continue running in the background, then later reattached.
+# 🔐 Secure tmux
 
-This release runs on OpenBSD, FreeBSD, NetBSD, Linux, macOS and Solaris.
+### Security-Hardened Terminal Multiplexer
 
-## Dependencies
+[![License: ISC](https://img.shields.io/badge/License-ISC-blue.svg)](https://opensource.org/licenses/ISC)
+[![Platform](https://img.shields.io/badge/Platform-Linux%20|%20macOS%20|%20BSD-lightgrey.svg)]()
 
-tmux depends on [libevent](https://libevent.org) 2.x, available from [this
-page](https://github.com/libevent/libevent/releases/latest).
+*A security-hardened fork of tmux addressing common vulnerabilities in multi-user terminal environments.*
 
-It also depends on [ncurses](https://www.gnu.org/software/ncurses/), available
-from [this page](https://invisible-mirror.net/archives/ncurses/).
+</div>
 
-To build tmux, a C compiler (for example gcc or clang), make, pkg-config and a
-suitable yacc (yacc or bison) are needed.
+---
 
-## Installation
+## ✨ Security Features
 
-### Binary packages
+### 🔑 1. Session Passcode Protection
 
-Some platforms provide binary packages for tmux, although these are sometimes
-out of date. Examples are listed on
-[this page](https://github.com/tmux/tmux/wiki/Installing).
+Protect your sessions with a passcode that other users must enter to attach.
 
-### From release tarball
+<details>
+<summary><strong>Usage Examples</strong></summary>
 
-To build and install tmux from a release tarball, use:
+```bash
+# Create session with passcode
+tmux new-session -s mysession -p "secretpass"
 
-~~~bash
+# Set passcode on existing session
+tmux session-passcode -t mysession "secretpass"
+
+# Attach to protected session
+tmux attach -t mysession -p "secretpass"
+
+# Check passcode status
+tmux session-passcode -t mysession
+
+# Clear passcode
+tmux session-passcode -c -t mysession
+```
+
+</details>
+
+> **Note:** Session owners and root do not need to enter the passcode.
+
+---
+
+### 🛡️ 2. Socket Directory Hardening
+
+Enhanced protection against symlink attacks and unauthorized access.
+
+| Protection | Description |
+|------------|-------------|
+| **Secure Locations** | Prefers `$XDG_RUNTIME_DIR` → `/run/user/$UID` → `/tmp` |
+| **Symlink Prevention** | Uses `O_NOFOLLOW` to prevent symlink attacks |
+| **Ownership Validation** | Validates directory ownership before socket creation |
+| **Strict Permissions** | Enforces mode `0700` on socket directories |
+| **TOCTOU Safety** | Uses `openat()` for race-condition-free validation |
+
+<details>
+<summary><strong>Configuration</strong></summary>
+
+```bash
+set -g socket-path-validate on       # Enable path validation (default: on)
+set -g socket-strict-permissions on  # Enforce strict permissions (default: on)
+```
+
+</details>
+
+---
+
+### 📋 3. Clipboard Security
+
+Protection against clipboard poisoning and data leakage attacks.
+
+| Protection | Description |
+|------------|-------------|
+| **Escape Sanitization** | Removes dangerous escape sequences from clipboard data |
+| **Control Char Filtering** | Filters BEL, BS, ESC, and other control characters |
+| **Size Limits** | Prevents memory exhaustion via oversized clipboard data |
+| **Audit Logging** | Logs clipboard access for security monitoring |
+
+<details>
+<summary><strong>Configuration</strong></summary>
+
+```bash
+set -g clipboard-sanitize on         # Enable sanitization (default: on)
+set -g clipboard-max-size 1048576    # Max size in bytes (default: 1MB)
+```
+
+</details>
+
+---
+
+### 🔒 4. Environment Variable Protection
+
+Prevents SSH agent hijacking and malicious environment variable injection.
+
+| Protection | Description |
+|------------|-------------|
+| **SSH_AUTH_SOCK Validation** | Validates existence, type, and ownership |
+| **KRB5CCNAME Validation** | Validates Kerberos credential cache files |
+| **Dangerous Variable Blocking** | Blocks `LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_INSERT_LIBRARIES`, etc. |
+| **Custom Deny Lists** | Supports explicit deny lists for additional blocking |
+
+<details>
+<summary><strong>Configuration</strong></summary>
+
+```bash
+set -g secure-update-environment on
+set -s update-environment-deny "LD_PRELOAD LD_LIBRARY_PATH DYLD_INSERT_LIBRARIES"
+```
+
+</details>
+
+---
+
+### 🚫 5. Escape Sequence Filtering
+
+Protection against terminal escape sequence injection attacks.
+
+| Protection | Description |
+|------------|-------------|
+| **Title Sanitization** | Sanitizes window and pane titles |
+| **Control Output Filtering** | Filters control mode output |
+| **Sequence Removal** | Removes CSI, OSC, and DCS escape sequences |
+| **Strict Mode** | Only allows printable ASCII in titles |
+
+<details>
+<summary><strong>Configuration</strong></summary>
+
+```bash
+set -g title-sanitize 1              # 0=off, 1=on, 2=strict (default: 1)
+set -g control-output-sanitize on    # Sanitize control mode output (default: on)
+```
+
+</details>
+
+---
+
+### 👥 6. Per-Session Access Control
+
+Fine-grained access control for each session.
+
+| Feature | Description |
+|---------|-------------|
+| **Owner Tracking** | Each session tracks its owner (UID) |
+| **Private Sessions** | Owner-only access mode |
+| **Session Locking** | Prevent new attachments |
+| **User Permissions** | Per-user read-only or read-write access |
+| **Automatic Enforcement** | ACL checked automatically on attach |
+
+---
+
+## ⚡ Quick Setup
+
+Add to your `~/.tmux.conf` for maximum security:
+
+```bash
+# Socket Security
+set -g socket-path-validate on
+set -g socket-strict-permissions on
+
+# Clipboard Security
+set -g clipboard-sanitize on
+set -g clipboard-max-size 1048576
+
+# Environment Security
+set -g secure-update-environment on
+set -s update-environment-deny "LD_PRELOAD LD_LIBRARY_PATH DYLD_INSERT_LIBRARIES"
+
+# Escape Sequence Security
+set -g title-sanitize 1
+set -g control-output-sanitize on
+```
+
+---
+
+## 📖 Command Reference
+
+### New Commands
+
+| Command | Description |
+|---------|-------------|
+| `session-passcode [-c] [-t target] [passcode]` | Set, check, or clear session passcode |
+
+**Alias:** `sessp`
+
+**Options:**
+- `-c` — Clear the passcode
+- `-t target-session` — Target session
+
+### Modified Commands
+
+| Command | New Option | Description |
+|---------|------------|-------------|
+| `new-session` | `-p passcode` | Set session passcode on creation |
+| `attach-session` | `-p passcode` | Provide passcode to attach |
+
+---
+
+## 📦 About tmux
+
+tmux is a terminal multiplexer: it enables a number of terminals to be created, accessed, and controlled from a single screen. tmux may be detached from a screen and continue running in the background, then later reattached.
+
+**Supported Platforms:** OpenBSD, FreeBSD, NetBSD, Linux, macOS, Solaris
+
+---
+
+## 🔧 Installation
+
+### Dependencies
+
+- **libevent 2.x** — https://github.com/libevent/libevent/releases/latest
+- **ncurses** — https://invisible-mirror.net/archives/ncurses/
+- **Build tools:** C compiler (gcc/clang), make, pkg-config, yacc/bison
+
+### From Release Tarball
+
+```bash
 ./configure && make
 sudo make install
-~~~
+```
 
-tmux can use the utempter library to update utmp(5), if it is installed - run
-configure with `--enable-utempter` to enable this.
+### From Source (requires autoconf, automake, pkg-config)
 
-For more detailed instructions on building and installing tmux, see
-[this page](https://github.com/tmux/tmux/wiki/Installing).
-
-### From version control
-
-To get and build the latest from version control - note that this requires
-`autoconf`, `automake` and `pkg-config`:
-
-~~~bash
+```bash
 git clone https://github.com/tmux/tmux.git
 cd tmux
 sh autogen.sh
 ./configure && make
-~~~
+sudo make install
+```
 
-## Contributing
+> **Tip:** Use `--enable-utempter` to enable utmp(5) updates.
 
-Bug reports, feature suggestions and especially code contributions are most
-welcome. Please send by email to:
+---
 
-tmux-users@googlegroups.com
+## 📚 Documentation
 
-Or open a GitHub issue or pull request. **Please read [this
-document](CONTRIBUTING.md) before opening an issue.**
+- **Man page:** `nroff -mdoc tmux.1 | less`
+- **Example config:** `example_tmux.conf`
+- **Wiki:** https://github.com/tmux/tmux/wiki
+- **FAQ:** https://github.com/tmux/tmux/wiki/FAQ
+- **Bash completion:** https://github.com/scop/bash-completion/blob/main/completions/tmux
+- **Debugging:** Run with `-v` or `-vv` for logs
 
-There is [a list of suggestions for contributions](https://github.com/tmux/tmux/wiki/Contributing).
-Please feel free to ask on the mailing list if you're thinking of working on something or need
-further information.
+---
 
-## Documentation
+## 🤝 Contributing
 
-For documentation on using tmux, see the tmux.1 manpage. View it from the
-source tree with:
+Bug reports, feature suggestions, and code contributions are welcome!
 
-~~~bash
-nroff -mdoc tmux.1|less
-~~~
+- **Email:** tmux-users@googlegroups.com
+- **GitHub:** Open an issue or pull request
+- **Subscribe:** tmux-users+subscribe@googlegroups.com
 
-A small example configuration is in `example_tmux.conf`.
+---
 
-And a bash(1) completion file at:
+## 📄 License
 
-https://github.com/scop/bash-completion/blob/main/completions/tmux
-
-For debugging, run tmux with `-v` or `-vv` to generate server and client log
-files in the current directory.
-
-## Support
-
-The tmux mailing list for general discussion and bug reports is:
-
-https://groups.google.com/forum/#!forum/tmux-users
-
-Subscribe by sending an email to:
-
-tmux-users+subscribe@googlegroups.com
+This file and CHANGES are licensed under the **ISC License**.  
+All other files have a license and copyright notice at their start.
