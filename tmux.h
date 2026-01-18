@@ -52,6 +52,7 @@ struct environ;
 struct format_job_tree;
 struct format_tree;
 struct hyperlinks_uri;
+struct session_acl;
 struct hyperlinks;
 struct input_ctx;
 struct input_request;
@@ -83,12 +84,15 @@ struct winlink;
 #ifndef TMUX_CONF
 #define TMUX_CONF "/etc/tmux.conf:~/.tmux.conf"
 #endif
+/* Secure socket path: prefer XDG_RUNTIME_DIR, then /run/user/UID, then /tmp */
 #ifndef TMUX_SOCK
-#define TMUX_SOCK "$TMUX_TMPDIR:" _PATH_TMP
+#define TMUX_SOCK "$TMUX_TMPDIR:$XDG_RUNTIME_DIR:/run/user/$UID:" _PATH_TMP
 #endif
 #ifndef TMUX_SOCK_PERM
-#define TMUX_SOCK_PERM (7 /* o+rwx */)
+#define TMUX_SOCK_PERM (077 /* reject any group or other access */)
 #endif
+/* Secure socket permission mode for directory (0700) */
+#define TMUX_SOCK_DIR_MODE (S_IRWXU)
 #ifndef TMUX_TERM
 #define TMUX_TERM "screen"
 #endif
@@ -1456,6 +1460,8 @@ struct session {
 
 	struct environ	*environ;
 
+	struct session_acl	*acl;	/* per-session access control */
+
 	int		 references;
 
 	TAILQ_ENTRY(session) gentry;
@@ -2754,7 +2760,7 @@ char		*cmd_template_replace(const char *, const char *, int);
 
 /* cmd-attach-session.c */
 enum cmd_retval	 cmd_attach_session(struct cmdq_item *, const char *, int, int,
-		     int, const char *, int, const char *);
+		     int, const char *, int, const char *, const char *);
 
 /* cmd-parse.c */
 struct cmd_parse_result *cmd_parse_from_file(FILE *, struct cmd_parse_input *);
@@ -3681,6 +3687,26 @@ void			 server_acl_user_allow_write(uid_t);
 void			 server_acl_user_deny_write(uid_t);
 int			 server_acl_join(struct client *);
 uid_t			 server_acl_get_uid(struct server_acl_user *);
+
+/* session-acl.c */
+struct session_acl	*session_acl_create(uid_t);
+void			 session_acl_free(struct session_acl *);
+uid_t			 session_acl_get_owner(struct session_acl *);
+int			 session_acl_is_private(struct session_acl *);
+int			 session_acl_is_locked(struct session_acl *);
+void			 session_acl_set_private(struct session_acl *, int);
+void			 session_acl_set_locked(struct session_acl *, int);
+void			 session_acl_allow(struct session_acl *, uid_t);
+void			 session_acl_deny(struct session_acl *, uid_t);
+void			 session_acl_set_readonly(struct session_acl *, uid_t);
+void			 session_acl_set_readwrite(struct session_acl *, uid_t);
+void			 session_acl_remove(struct session_acl *, uid_t);
+int			 session_acl_check(struct session_acl *, uid_t);
+int			 session_acl_has_passcode(struct session_acl *);
+int			 session_acl_set_passcode(struct session_acl *, const char *);
+int			 session_acl_verify_passcode(struct session_acl *, const char *);
+int			 session_acl_needs_passcode(struct session_acl *, uid_t);
+void			 session_acl_display(struct session_acl *, struct cmdq_item *);
 
 /* hyperlink.c */
 u_int	 		 hyperlinks_put(struct hyperlinks *, const char *,

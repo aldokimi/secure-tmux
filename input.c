@@ -762,6 +762,106 @@ static const struct input_transition input_state_consume_st_table[] = {
 /* Maximum of bytes allowed to read in a single input. */
 static size_t input_buffer_size = INPUT_BUF_DEFAULT_SIZE;
 
+/*
+ * Security: Maximum clipboard size to prevent memory exhaustion attacks.
+ * Default: 1MB
+ */
+#define CLIPBOARD_MAX_SIZE (1024 * 1024)
+
+/*
+ * Security: Sanitize clipboard content by removing dangerous control
+ * characters and escape sequences that could be used for clipboard poisoning.
+ * Returns a newly allocated sanitized buffer, or NULL on error.
+ * Caller must free the returned buffer.
+ */
+static u_char *
+clipboard_sanitize(const u_char *data, size_t len, size_t *outlen)
+{
+	u_char	*out;
+	size_t	 i, j;
+	int	 in_escape = 0;
+
+	if (data == NULL || len == 0) {
+		*outlen = 0;
+		return (NULL);
+	}
+
+	/* Allocate output buffer (same size, we only remove chars) */
+	out = xmalloc(len + 1);
+	j = 0;
+
+	for (i = 0; i < len; i++) {
+		u_char c = data[i];
+
+		/* Track escape sequences to filter them out */
+		if (c == 0x1B) {  /* ESC */
+			in_escape = 1;
+			log_debug("clipboard: filtering escape sequence at pos %zu", i);
+			continue;
+		}
+
+		/* Skip bytes that are part of escape sequences */
+		if (in_escape) {
+			/* CSI sequences end with 0x40-0x7E */
+			if (c >= 0x40 && c <= 0x7E)
+				in_escape = 0;
+			/* OSC sequences end with BEL or ST */
+			else if (c == 0x07)
+				in_escape = 0;
+			continue;
+		}
+
+		/* Filter dangerous C0 control characters */
+		switch (c) {
+		case 0x00:  /* NUL - terminate strings */
+		case 0x07:  /* BEL - can cause audio/visual alerts */
+		case 0x08:  /* BS - backspace attacks */
+		case 0x0E:  /* SO - shift out (charset switching) */
+		case 0x0F:  /* SI - shift in */
+		case 0x1A:  /* SUB - sometimes used as escape */
+		case 0x7F:  /* DEL */
+			log_debug("clipboard: filtering control char 0x%02x at pos %zu", c, i);
+			continue;
+		default:
+			break;
+		}
+
+		/* Keep printable ASCII and valid UTF-8 sequences */
+		out[j++] = c;
+	}
+
+	out[j] = '\0';
+	*outlen = j;
+
+	if (j < len) {
+		log_debug("clipboard: sanitized %zu bytes, removed %zu dangerous bytes",
+		    len, len - j);
+	}
+
+	return (out);
+}
+
+/*
+ * Security: Check if clipboard size exceeds configured maximum.
+ */
+static int
+clipboard_check_size(size_t len, struct window_pane *wp)
+{
+	long long max_size;
+
+	max_size = options_get_number(global_options, "clipboard-max-size");
+	if (max_size <= 0)
+		max_size = CLIPBOARD_MAX_SIZE;
+
+	if (len > (size_t)max_size) {
+		log_debug("clipboard: rejected data of size %zu (max: %lld) from pane %%%u",
+		    len, max_size, wp ? wp->id : 0);
+		return (-1);
+	}
+
+	return (0);
+}
+
 /* Input table compare. */
 static int
 input_table_compare(const void *key, const void *value)
@@ -3117,8 +3217,9 @@ input_osc_52(struct input_ctx *ictx, const char *p)
 	struct window_pane	*wp = ictx->wp;
 	size_t			 len;
 	char			*end;
-	u_char			*out;
-	int			 outlen, state;
+	u_char			*out, *sanitized;
+	int			 outlen, state, do_sanitize;
+	size_t			 sanitized_len;
 	struct screen_write_ctx	 ctx;
 	const char*		 allow = "cpqs01234567";
 	char			 flags[sizeof "cpqs01234567"] = "";
@@ -3152,11 +3253,34 @@ input_osc_52(struct input_ctx *ictx, const char *p)
 	if (len == 0)
 		return;
 
+	/* Security: Check size limit before allocating */
+	if (clipboard_check_size(len, wp) != 0) {
+		log_debug("%s: clipboard data too large (%zu bytes), rejecting",
+		    __func__, len);
+		return;
+	}
+
 	out = xmalloc(len);
 	if ((outlen = b64_pton(end, out, len)) == -1) {
 		free(out);
 		return;
 	}
+
+	/* Security: Sanitize clipboard content if enabled */
+	do_sanitize = options_get_number(global_options, "clipboard-sanitize");
+	if (do_sanitize) {
+		sanitized = clipboard_sanitize(out, outlen, &sanitized_len);
+		if (sanitized != NULL) {
+			free(out);
+			out = sanitized;
+			outlen = sanitized_len;
+		}
+	}
+
+	/* Security: Log clipboard access for auditing */
+	log_debug("%s: pane %%%u setting clipboard, %d bytes%s",
+	    __func__, wp->id, outlen,
+	    do_sanitize ? " (sanitized)" : "");
 
 	screen_write_start_pane(&ctx, wp, NULL);
 	screen_write_setselection(&ctx, flags, out, outlen);

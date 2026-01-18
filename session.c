@@ -125,6 +125,9 @@ session_create(const char *prefix, const char *name, const char *cwd,
 	s->environ = env;
 	s->options = oo;
 
+	/* Security: Create per-session ACL with current user as owner */
+	s->acl = session_acl_create(getuid());
+
 	status_update_cache(s);
 
 	s->tio = NULL;
@@ -148,7 +151,8 @@ session_create(const char *prefix, const char *name, const char *cwd,
 	}
 	RB_INSERT(sessions, &sessions, s);
 
-	log_debug("new session %s $%u", s->name, s->id);
+	log_debug("new session %s $%u (owner uid %ld)", s->name, s->id,
+	    (long)getuid());
 
 	if (gettimeofday(&s->creation_time, NULL) != 0)
 		fatal("gettimeofday failed");
@@ -187,6 +191,7 @@ session_free(__unused int fd, __unused short events, void *arg)
 	if (s->references == 0) {
 		environ_free(s->environ);
 		options_free(s->options);
+		session_acl_free(s->acl);
 
 		free(s->name);
 		free(s);

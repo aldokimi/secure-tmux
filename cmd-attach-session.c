@@ -37,8 +37,8 @@ const struct cmd_entry cmd_attach_session_entry = {
 	.name = "attach-session",
 	.alias = "attach",
 
-	.args = { "c:dEf:rt:x", 0, 0, NULL },
-	.usage = "[-dErx] [-c working-directory] [-f flags] "
+	.args = { "c:dEf:p:rt:x", 0, 0, NULL },
+	.usage = "[-dErx] [-c working-directory] [-f flags] [-p passcode] "
 	         CMD_TARGET_SESSION_USAGE,
 
 	/* -t is special */
@@ -49,18 +49,20 @@ const struct cmd_entry cmd_attach_session_entry = {
 
 enum cmd_retval
 cmd_attach_session(struct cmdq_item *item, const char *tflag, int dflag,
-    int xflag, int rflag, const char *cflag, int Eflag, const char *fflag)
+    int xflag, int rflag, const char *cflag, int Eflag, const char *fflag,
+    const char *passcode)
 {
 	struct cmd_find_state	*current = cmdq_get_current(item);
 	struct cmd_find_state	 target;
 	enum cmd_find_type	 type;
-	int			 flags;
+	int			 flags, acl_result;
 	struct client		*c = cmdq_get_client(item), *c_loop;
 	struct session		*s;
 	struct winlink		*wl;
 	struct window_pane	*wp;
 	char			*cwd, *cause;
 	enum msgtype		 msgtype;
+	uid_t			 client_uid;
 
 	if (RB_EMPTY(&sessions)) {
 		cmdq_error(item, "no sessions");
@@ -88,6 +90,37 @@ cmd_attach_session(struct cmdq_item *item, const char *tflag, int dflag,
 	s = target.s;
 	wl = target.wl;
 	wp = target.wp;
+
+	/* Security: Check session-level ACL before allowing attachment */
+	client_uid = proc_get_peer_uid(c->peer);
+	if (s->acl != NULL && client_uid != (uid_t)-1) {
+		acl_result = session_acl_check(s->acl, client_uid);
+		if (acl_result == 0) {
+			cmdq_error(item, "session access denied by session ACL");
+			return (CMD_RETURN_ERROR);
+		}
+		/* Force read-only if ACL says so */
+		if (acl_result == 1 && !rflag) {
+			log_debug("session ACL: forcing read-only for uid %ld",
+			    (long)client_uid);
+			rflag = 1;
+		}
+
+		/* Security: Check if passcode is required */
+		if (session_acl_needs_passcode(s->acl, client_uid)) {
+			if (passcode == NULL) {
+				cmdq_error(item, "session requires passcode, "
+				    "use -p passcode to provide it");
+				return (CMD_RETURN_ERROR);
+			}
+			if (!session_acl_verify_passcode(s->acl, passcode)) {
+				cmdq_error(item, "incorrect session passcode");
+				return (CMD_RETURN_ERROR);
+			}
+			log_debug("session passcode verified for uid %ld",
+			    (long)client_uid);
+		}
+	}
 
 	if (wl != NULL) {
 		if (wp != NULL)
@@ -171,5 +204,6 @@ cmd_attach_session_exec(struct cmd *self, struct cmdq_item *item)
 
 	return (cmd_attach_session(item, args_get(args, 't'),
 	    args_has(args, 'd'), args_has(args, 'x'), args_has(args, 'r'),
-	    args_get(args, 'c'), args_has(args, 'E'), args_get(args, 'f')));
+	    args_get(args, 'c'), args_has(args, 'E'), args_get(args, 'f'),
+	    args_get(args, 'p')));
 }
